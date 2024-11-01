@@ -8,6 +8,7 @@ from epsilon_transformers.process.dataset import (
     ProcessDataset,
     process_dataset_collate_fn,
 )
+from epsilon_transformers.process.PartitionLattice import generate_set_partitions
 
 # TODO: Check for off by 1 error in the sample_emission asserts
 # TODO: Check that histogram distribution matches steady state distribution in test_generate_single_sequence
@@ -111,6 +112,50 @@ def test_msp_creation():
         ]
     )
 
+# Example usage and verification
+def test_generate_partitions():
+    """
+    Verify the partition generator produces correct results for small n.
+    """
+    # Test cases with known Bell numbers
+    test_cases = {
+        1: 1,   # B(1) = 1
+        2: 2,   # B(2) = 2
+        3: 5,   # B(3) = 5
+        4: 15,  # B(4) = 15
+    }
+    
+    for n, expected in test_cases.items():
+        partitions = generate_set_partitions(n)
+        actual = len(partitions)
+        assert actual == expected, f"Failed for n={n}: expected {expected}, got {actual}"
+        
+        # For n=3, verify specific structure
+        if n == 3:
+            # Convert to sets for easier comparison
+            partition_sets = [
+                [frozenset(subset) for subset in partition]
+                for partition in partitions
+            ]
+            
+            # Expected partitions for n=3
+            expected_partitions = [
+                [{0, 1, 2}],
+                [{0, 1}, {2}],
+                [{0, 2}, {1}],
+                [{1, 2}, {0}],
+                [{0}, {1}, {2}]
+            ]
+            expected_sets = [
+                [frozenset(subset) for subset in partition]
+                for partition in expected_partitions
+            ]
+            
+            # Verify all expected partitions are present
+            assert all(any(set(p1) == set(p2) for p1 in partition_sets)
+                      for p2 in expected_sets)
+    
+    return True
 
 if __name__ == "__main__":
-    test_yield_emission_histories()
+    test_generate_partitions()
