@@ -47,45 +47,32 @@ def generate_set_partitions(n: int) -> List[List[int]]:
     return partitions
 
 def coarse_grain_process(hmm_tensor: Float[np.ndarray, "vocab_len num_states num_states"], state_groups) -> Process:
-    # Verify input tensor is valid probability distribution
     assert np.allclose(np.sum(hmm_tensor, axis=(0,2)), 1), "Input tensor must sum to 1 over emissions and next states"
     assert np.all(hmm_tensor >= 0), "Input tensor must contain non-negative probabilities"
    
     emission_vocab, num_states, _ = hmm_tensor.shape
-    num_new_states = len(state_groups)
-   
-    # Verify state groups are valid
     all_states = sorted([s for group in state_groups for s in group])
     assert len(all_states) == num_states, "State groups must contain each state exactly once"
     assert all_states == list(range(num_states)), "State groups must contain valid state indices"
 
-    # Initialize new tensor
+    num_new_states = len(state_groups)
     new_tensor = np.zeros((emission_vocab, num_new_states, num_new_states))
-
-    # For each emission
     for e in range(emission_vocab):
-        # For each new state (source)
         for i, group_i in enumerate(state_groups):
-            # Get total probability mass coming from states in group_i
-            group_i_mass = np.sum([np.sum(hmm_tensor[e,old_i,:]) for old_i in group_i])
+            # Skip group_i if there is no outgoing probabilty mass
+            if np.sum([np.sum(hmm_tensor[e,old_i,:]) for old_i in group_i]) <= 0:
+                continue
             
-            if group_i_mass > 0:  # Avoid division by zero
-                # For each new state (destination)
-                for j, group_j in enumerate(state_groups):
-                    # Sum probabilities from all states in group_i to all states in group_j
-                    prob_sum = sum(hmm_tensor[e,old_i,old_j] 
-                                    for old_i in group_i 
-                                    for old_j in group_j)
-                    # Normalize by total probability mass from group_i
-                    new_tensor[e,i,j] = prob_sum / len(group_i)
+            for j, group_j in enumerate(state_groups):
+                # Sum over all and normalize by the number of the group in the source partition
+                prob_sum = sum(hmm_tensor[e,old_i,old_j] 
+                                for old_i in group_i 
+                                for old_j in group_j)
+                new_tensor[e,i,j] = prob_sum / len(group_i)    
     
-    # Normalize to ensure it's still a valid probability distribution
-    # Sum over emissions and next states should be 1 for each current state
-    normalization = np.sum(new_tensor, axis=(0,2))
-    for i in range(num_new_states):
-        if normalization[i] > 0:  # Avoid division by zero
-            new_tensor[:,i,:] /= normalization[i]
-
+    assert np.allclose(np.sum(new_tensor, axis=(0,2)), 1.), "Error: Coarse grained tensor must sum to 1 over emissions and next states"
+    assert np.all(new_tensor >= 0), "Error: Coarse grained tensor must contain non-negative probabilities"
+    
     return TransitionMatrixProcess(transition_matrix=new_tensor)
 
 def generate_all_coarse_grained_processes(process: Process) -> List[Process]:
