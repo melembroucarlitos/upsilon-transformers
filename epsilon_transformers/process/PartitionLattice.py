@@ -5,7 +5,9 @@ import numpy as np
 from epsilon_transformers.process.Process import Process
 from epsilon_transformers.process.processes import TransitionMatrixProcess
 
-def generate_set_partitions(n: int) -> List[List[int]]:
+Partitions = List[List[int]]
+
+def generate_set_partitions(n: int) -> Partitions:
     """
     Generate all possible partitions of a set of size n using an iterative approach.
     Returns a list of partitions, where each partition is a list of subsets.
@@ -46,7 +48,7 @@ def generate_set_partitions(n: int) -> List[List[int]]:
     
     return partitions
 
-def coarse_grain_process(hmm_tensor: Float[np.ndarray, "vocab_len num_states num_states"], state_groups) -> Process:
+def coarse_grain_process(hmm_tensor: Float[np.ndarray, "vocab_len num_states num_states"], state_groups: Partitions) -> Process:
     assert np.allclose(np.sum(hmm_tensor, axis=(0,2)), 1), "Input tensor must sum to 1 over emissions and next states"
     assert np.all(hmm_tensor >= 0), "Input tensor must contain non-negative probabilities"
    
