@@ -1,7 +1,13 @@
+from dataclasses import dataclass
 import numpy as np
-from typing import cast
+import torch
+import torch.nn.functional as F
+from typing import Dict, List, cast
 from types import FrameType
 import inspect
+from regex import B
+from jaxtyping import Float
+from transformer_lens import HookedTransformer
 
 from epsilon_transformers.process.Process import Process
 
@@ -119,3 +125,77 @@ PROCESS_REGISTRY: dict[str, type] = {
     for key, value in cast(FrameType, inspect.currentframe()).f_locals.items()
     if isinstance(value, type) and issubclass(value, Process) and key != "Process"
 }
+
+def _generate_all_possible_n_length_sequences(vocab_len: int, context_len: int) -> List[List[int]]:
+    result = [[]]
+    for _ in range(context_len):
+        result = [s.append(c) for s in result for c in range(vocab_len)]
+    return result
+
+def _generate_all_sequences_up_to_length(max_len: int, vocab_len: int) -> List[List[int]]:
+    """Generate all possible sequences of length 0 to max_len"""
+    all_strings = [[]]
+    for length in range(max_len):
+        all_strings.extend([s + [c] for s in all_strings[-vocab_len**length:] for c in range(vocab_len)])
+    return all_strings[1:] # Omit empty sequence
+
+def _find_subsequence_idx(lst_of_sequences: List[List[int]], subsequence: List[int]) -> int:
+    """Find the first full sequence that starts with the subsequence"""
+    subseq_len = len(subsequence)
+    for i, full_seq in enumerate(lst_of_sequences):
+        if full_seq[:subseq_len] == subsequence:
+            return i
+    raise ValueError(f"Subsequence {subsequence} not found at start of any sequence")
+
+@dataclass
+class Glut:
+    vocab_len: int
+    context_len: int
+    table: Dict[str, Float[torch.Tensor, "vocab_len"]]
+
+    def __init__(self, vocab_len: int, context_len: int, all_possible_n_length_sequences: List[List[int]], probs: Float[torch.Tensor, "num_n_length_strings ctx_len vocab_len"]) -> Dict[str, Float[torch.Tensor, "vocab_len"]]:
+        assert len(all_possible_n_length_sequences) == probs.shape[0], f"Number of sequences ({len(all_possible_n_length_sequences)}) must match first dimension of probs ({probs.shape[0]})"
+        assert vocab_len < 10, "current implementation only deals w/ single digit state enumerations"
+
+        self.vocab_len = vocab_len
+        self.context_len = context_len
+
+        all_sequences_up_to_ctx_len = _generate_all_sequences_up_to_length(max_len=context_len, vocab_len=vocab_len)
+        glut_dict = dict()
+        for seq in all_sequences_up_to_ctx_len:
+            seq_idx = _find_subsequence_idx(lst_of_sequences=all_possible_n_length_sequences, subsequence=seq)
+            glut_dict[''.join([str(x) for x in seq])] = probs[seq_idx, len(seq) - 1]
+        self.table = glut_dict
+
+def _create_hmm_glut(glut: Glut) -> Float[np.ndarray, "vocab_len num_snum_possible_strs num_possible_strs"]:
+    states = list(glut.table.keys())
+    num_states = len(states)
+
+    hmm = np.zeros((glut.vocab_len, num_states, num_states))
+    for i, from_state in enumerate(states):
+        probs = glut.table[from_state]
+        for j, to_state in enumerate(states):
+            if to_state[:-1] == from_state:
+                token = int(to_state[-1])
+                hmm[token, i, j] = probs[token]
+    return hmm
+
+def _minify_hmm_glut(hmm: Float[np.ndarray, "vocab_len num_possible_strs num_possible_strs"]) -> Float[np.ndarray, "vocab_len num_states num_states"]:
+    raise NotImplementedError
+
+def transformer_to_hmm(model: HookedTransformer, batch_size: int, minify: bool=True) -> Process:
+    all_possible_transformer_strings = _generate_all_possible_n_length_sequences(vocab_len=model.cfg.d_vocab, context_len=model.cfg.n_ctx)
+    all_possible_transformer_strings_batched = [all_possible_transformer_strings[i:i + batch_size] for i in range(0, len(all_possible_transformer_strings), batch_size)]
+
+    logits_batched: List[Float[torch.Tensor, "batch_size ctx_len d_vocab"]] = [model(torch.tensor(batch)) for batch in all_possible_transformer_strings_batched]
+    logits_flattened = torch.cat(logits_batched, dim=0)
+    probs = F.softmax(logits_flattened, dim=-1)
+
+    glut = Glut(vocab_len=model.cfg.d_vocab, context_len=model.cfg.n_ctx, all_possible_n_length_strings=all_possible_transformer_strings, probs=probs)
+    hmm = _create_hmm_glut(glut=glut)
+    if minify:
+        hmm = _minify_hmm_glut(hmm=hmm)
+    return TransitionMatrixProcess(transition_matrix=hmm)
+
+if __name__ == "__main__":
+    print(_generate_all_sequences_up_to_length(max_len=5, vocab_len=4))
