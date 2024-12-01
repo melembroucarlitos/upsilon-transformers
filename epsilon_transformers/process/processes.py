@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Dict, List, cast
+from typing import Dict, List, Optional, Set, Tuple, cast
 from types import FrameType
 import inspect
 from regex import B
@@ -167,7 +167,7 @@ class Glut:
             glut_dict[''.join([str(x) for x in seq])] = probs[seq_idx, len(seq) - 1]
         self.table = glut_dict
 
-def _create_hmm_glut(glut: Glut) -> Float[np.ndarray, "vocab_len num_snum_possible_strs num_possible_strs"]:
+def _glut_to_hmm(glut: Glut) -> Float[np.ndarray, "vocab_len num_snum_possible_strs num_possible_strs"]:
     states = list(glut.table.keys())
     num_states = len(states)
 
@@ -180,8 +180,62 @@ def _create_hmm_glut(glut: Glut) -> Float[np.ndarray, "vocab_len num_snum_possib
                 hmm[token, i, j] = probs[token]
     return hmm
 
-def _minify_hmm_glut(hmm: Float[np.ndarray, "vocab_len num_possible_strs num_possible_strs"]) -> Float[np.ndarray, "vocab_len num_states num_states"]:
-    raise NotImplementedError
+def _compute_n_step_distributions(hmm: Float[np.ndarray, "vocab_len num_states num_states"], start_state_idx: int, n_steps: int) -> Float[np.ndarray, "n_steps vocab_len"]:
+    vocab_len, num_states, _ = hmm.shape
+
+    state_dist = np.zeros(num_states)
+    state_dist[start_state_idx] = 1.0
+
+    token_distributions = []
+    for _ in range(n_steps):
+        token_dist = np.ndarray([np.sum(hmm[v] @ state_dist) for v in range(vocab_len)])
+        token_distributions.append(token_dist)            
+
+        new_state_dist = np.zeros_like(state_dist)
+        for v in range(vocab_len):
+            new_state_dist += (hmm[v] @ state_dist)
+        state_dist = new_state_dist
+    return np.concatenate(token_distributions)
+
+def _minify_hmm(hmm: Float[np.ndarray, "vocab_len num_states_a num_states_a"], n_steps: int, tol: Optional[float] = None) -> Float[np.ndarray, "vocab_len num_states num_states"]:
+    vocab_len, num_states, _ = hmm.shape
+    if tol is None:
+        tol = 1.0
+
+    # Compute n-step signatures for all states
+    signatures: List[np.ndarray] = []
+    for state_idx in range(num_states):
+        n_step_dist = _compute_n_step_distributions(hmm=hmm, start_state_idx=state_idx, n_steps=n_steps)
+        signatures.append(tuple(np.round(n_step_dist / tol) * tol))
+
+    # Create equivelance class for all states
+    state_classes: Dict[Tuple[np.ndarray], Set[int]] = {}
+    for state_idx_a in range(num_states):
+        curr_dict_idx = tuple(signatures[state_idx_a].tolist())
+        if curr_dict_idx not in list(state_classes.keys()):
+            state_classes[curr_dict_idx] = set([state_idx_a])
+        for state_idx_b in range(num_states):
+            if np.allclose(signatures[state_idx_a], signatures[state_idx_a], rtol=tol):
+                state_classes[curr_dict_idx].add(state_idx_b)
+    
+    # Create state mapping
+    state_mapping = {}
+    for new_idx, (_, states) in enumerate(state_classes.items()):
+        for old_idx in states:
+            state_mapping[old_idx] = new_idx
+
+    # Create minimized HMM
+    num_minimal_states = len(state_classes)
+    minimal_hmm = np.zeros((vocab_len, num_minimal_states, num_minimal_states))
+
+    # Average transitions for equivalent states
+    for old_from, new_from in state_mapping.items():
+        class_size = len([1 for old in state_mapping if state_mapping[old] == new_from])
+        for old_to in range(num_states):
+            new_to = state_mapping[old_to]
+            minimal_hmm[:, new_from, new_to] += hmm[:, old_from, old_to] / class_size
+    
+    return minimal_hmm
 
 def transformer_to_hmm(model: HookedTransformer, batch_size: int, minify: bool=True) -> Process:
     all_possible_transformer_strings = _generate_all_possible_n_length_sequences(vocab_len=model.cfg.d_vocab, context_len=model.cfg.n_ctx)
@@ -192,9 +246,10 @@ def transformer_to_hmm(model: HookedTransformer, batch_size: int, minify: bool=T
     probs = F.softmax(logits_flattened, dim=-1)
 
     glut = Glut(vocab_len=model.cfg.d_vocab, context_len=model.cfg.n_ctx, all_possible_n_length_strings=all_possible_transformer_strings, probs=probs)
-    hmm = _create_hmm_glut(glut=glut)
+    hmm = _glut_to_hmm(glut=glut)
+    
     if minify:
-        hmm = _minify_hmm_glut(hmm=hmm)
+        hmm = _minify_hmm(hmm=hmm)
     return TransitionMatrixProcess(transition_matrix=hmm)
 
 if __name__ == "__main__":
