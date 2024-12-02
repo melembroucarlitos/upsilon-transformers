@@ -154,8 +154,37 @@ def test_generate_partitions():
             # Verify all expected partitions are present
             assert all(any(set(p1) == set(p2) for p1 in partition_sets)
                       for p2 in expected_sets)
-    
-    return True
+
+def test_transformer_to_hmm_e2e():
+    # Create a lookup table for transformer
+    # Create the glut_hmm
+    # Create a lookuptable for glut_hmm
+    # Check for equivelance
+    # Create a minified_hmm
+    # Create a lookuptable for minified_hmm
+    # Check for equivelance
+    raise NotImplementedError
+
+def test_generate_all_possible_n_length_sequences():
+    raise NotImplementedError
+
+def test_generate_all_sequences_up_to_length():
+    raise NotImplementedError
+
+def test_find_subsequence_idx():
+    raise NotImplementedError
+
+def test_glut_init():
+    raise NotImplementedError
+
+def test_glut_to_hmm():
+    raise NotImplementedError
+
+def test_compute_n_step_distributions():
+    raise NotImplementedError
+
+def test_minify_hmm():
+    raise NotImplementedError
 
 if __name__ == "__main__":
     test_generate_partitions()
